@@ -1,7 +1,10 @@
 
 local function create( first, ... )
 	if first ~= nil then
-		return coroutine.create(first), create( ... )
+	    if type( first ) ~= "function" then
+    		error( "Expected function, got "..type( first ), 3 )
+    	end
+ 		return coroutine.create(first), create( ... )
     end
     return nil
 end
@@ -17,9 +20,9 @@ local function runUntilLimit( _routines, _limit )
     		local r = _routines[n]
     		if r then
     			if tFilters[r] == nil or tFilters[r] == eventData[1] or eventData[1] == "terminate" then
-	    			local ok, param = coroutine.resume( r, unpack(eventData) )
+	    			local ok, param = coroutine.resume( r, table.unpack(eventData) )
 					if not ok then
-						error( param )
+						error( param, 0 )
 					else
 						tFilters[r] = param
 					end

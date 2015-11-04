@@ -12,8 +12,11 @@ local tEnv = {
 	["exit"] = function()
 		bRunning = false
 	end,
+	["_echo"] = function( ... )
+	    return ...
+	end,
 }
-setmetatable( tEnv, { __index = getfenv() } )
+setmetatable( tEnv, { __index = _ENV } )
 
 if term.isColour() then
 	term.setTextColour( colours.yellow )
@@ -28,13 +31,22 @@ while bRunning do
 	--end
 	write( "lua> " )
 	--term.setTextColour( colours.white )
-	
-	local s = read( nil, tCommandHistory )
+
+	local s = read( nil, tCommandHistory, function( sLine )
+	    local nStartPos = string.find( sLine, "[a-zA-Z0-9_%.]+$" )
+	    if nStartPos then
+	        sLine = string.sub( sLine, nStartPos )
+	    end
+	    if #sLine > 0 then
+            return textutils.complete( sLine, tEnv )
+        end
+        return nil
+	end )
 	table.insert( tCommandHistory, s )
 	
 	local nForcePrint = 0
-	local func, e = loadstring( s, "lua" )
-	local func2, e2 = loadstring( "return "..s, "lua" )
+	local func, e = load( s, "lua", "t", tEnv )
+	local func2, e2 = load( "return _echo("..s..");", "lua", "t", tEnv )
 	if not func then
 		if func2 then
 			func = func2
@@ -48,12 +60,21 @@ while bRunning do
 	end
 	
 	if func then
-        setfenv( func, tEnv )
-        local tResults = { pcall( function() return func() end ) }
+        local tResults = { pcall( func ) }
         if tResults[1] then
         	local n = 1
         	while (tResults[n + 1] ~= nil) or (n <= nForcePrint) do
-        		print( tostring( tResults[n + 1] ) )
+        	    local value = tResults[ n + 1 ]
+        	    if type( value ) == "table" then
+            	    local ok, serialised = pcall( textutils.serialise, value )
+            	    if ok then
+            	        print( serialised )
+            	    else
+            	        print( tostring( value ) )
+            	    end
+            	else
+            	    print( tostring( value ) )
+            	end
         		n = n + 1
         	end
         else

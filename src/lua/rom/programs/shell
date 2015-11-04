@@ -1,15 +1,23 @@
 
+local multishell = multishell
 local parentShell = shell
+local parentTerm = term.current()
+
+if multishell then
+    multishell.setTitle( multishell.getCurrent(), "shell" )
+end
 
 local bExit = false
 local sDir = (parentShell and parentShell.dir()) or ""
 local sPath = (parentShell and parentShell.path()) or ".:/rom/programs"
 local tAliases = (parentShell and parentShell.aliases()) or {}
+local tCompletionInfo = (parentShell and parentShell.getCompletionInfo()) or {}
 local tProgramStack = {}
 
 local shell = {}
 local tEnv = {
-	["shell"] = shell,
+	[ "shell" ] = shell,
+	[ "multishell" ] = multishell,
 }
 
 -- Colours
@@ -24,13 +32,22 @@ else
 	bgColour = colours.black
 end
 
-
 local function run( _sCommand, ... )
 	local sPath = shell.resolveProgram( _sCommand )
 	if sPath ~= nil then
 		tProgramStack[#tProgramStack + 1] = sPath
+		if multishell then
+		    multishell.setTitle( multishell.getCurrent(), fs.getName( sPath ) )
+		end
    		local result = os.run( tEnv, sPath, ... )
 		tProgramStack[#tProgramStack] = nil
+		if multishell then
+		    if #tProgramStack > 0 then
+    		    multishell.setTitle( multishell.getCurrent(), fs.getName( tProgramStack[#tProgramStack] ) )
+    		else
+    		    multishell.setTitle( multishell.getCurrent(), "shell" )
+    		end
+		end
 		return result
    	else
     	printError( "No such program" )
@@ -38,22 +55,31 @@ local function run( _sCommand, ... )
     end
 end
 
-local function runLine( _sLine )
+local function tokenise( ... )
+    local sLine = table.concat( { ... }, " " )
 	local tWords = {}
-	for match in string.gmatch( _sLine, "[^ \t]+" ) do
-		table.insert( tWords, match )
-	end
-
-	local sCommand = tWords[1]
-	if sCommand then
-		return run( sCommand, unpack( tWords, 2 ) )
-	end
-	return false
+    local bQuoted = false
+    for match in string.gmatch( sLine .. "\"", "(.-)\"" ) do
+        if bQuoted then
+            table.insert( tWords, match )
+        else
+            for m in string.gmatch( match, "[^ \t]+" ) do
+                table.insert( tWords, m )
+            end
+        end
+        bQuoted = not bQuoted
+    end
+    return tWords
 end
 
 -- Install shell API
 function shell.run( ... )
-	return runLine( table.concat( { ... }, " " ) )
+	local tWords = tokenise( ... )
+	local sCommand = tWords[1]
+	if sCommand then
+		return run( sCommand, table.unpack( tWords, 2 ) )
+	end
+	return false
 end
 
 function shell.exit()
@@ -121,7 +147,8 @@ function shell.programs( _bIncludeHidden )
     	sPath = shell.resolve( sPath )
 		if fs.isDir( sPath ) then
 			local tList = fs.list( sPath )
-			for n,sFile in pairs( tList ) do
+            for n=1,#tList do
+                local sFile = tList[n]
 				if not fs.isDir( fs.combine( sPath, sFile ) ) and
 				   (_bIncludeHidden or string.sub( sFile, 1, 1 ) ~= ".") then
 					tItems[ sFile ] = true
@@ -137,6 +164,103 @@ function shell.programs( _bIncludeHidden )
 	end
 	table.sort( tItemList )
 	return tItemList
+end
+
+local function completeProgram( sLine )
+	if #sLine > 0 and string.sub( sLine, 1, 1 ) == "/" then
+	    -- Add programs from the root
+	    return fs.complete( sLine, "", true, false )
+
+    else
+        local tResults = {}
+        local tSeen = {}
+
+        -- Add aliases
+        for sAlias, sCommand in pairs( tAliases ) do
+            if #sAlias > #sLine and string.sub( sAlias, 1, #sLine ) == sLine then
+                local sResult = string.sub( sAlias, #sLine + 1 )
+                if not tSeen[ sResult ] then
+                    table.insert( tResults, sResult )
+                    tSeen[ sResult ] = true
+                end
+            end
+        end
+
+        -- Add programs from the path
+        local tPrograms = shell.programs()
+        for n=1,#tPrograms do
+            local sProgram = tPrograms[n]
+            if #sProgram > #sLine and string.sub( sProgram, 1, #sLine ) == sLine then
+                local sResult = string.sub( sProgram, #sLine + 1 )
+                if not tSeen[ sResult ] then
+                    table.insert( tResults, sResult )
+                    tSeen[ sResult ] = true
+                end
+            end
+        end
+
+        -- Sort and return
+        table.sort( tResults )
+        return tResults
+    end
+end
+
+local function completeProgramArgument( sProgram, nArgument, sPart, tPreviousParts )
+    local tInfo = tCompletionInfo[ sProgram ]
+    if tInfo then
+        return tInfo.fnComplete( shell, nArgument, sPart, tPreviousParts )
+    end
+    return nil
+end
+
+function shell.complete( sLine )
+    if #sLine > 0 then
+        local tWords = tokenise( sLine )
+        local nIndex = #tWords
+        if string.sub( sLine, #sLine, #sLine ) == " " then
+            nIndex = nIndex + 1
+        end
+        if nIndex == 1 then
+            local sBit = tWords[1] or ""
+            local sPath = shell.resolveProgram( sBit )
+            if tCompletionInfo[ sPath ] then
+                return { " " }
+            else
+                local tResults = completeProgram( sBit )
+                for n=1,#tResults do
+                    local sResult = tResults[n]
+                    local sPath = shell.resolveProgram( sBit .. sResult )
+                    if tCompletionInfo[ sPath ] then
+                        tResults[n] = sResult .. " "
+                    end
+                end
+                return tResults
+            end
+
+        elseif nIndex > 1 then
+            local sPath = shell.resolveProgram( tWords[1] )
+            local sPart = tWords[nIndex] or ""
+            local tPreviousParts = tWords
+            tPreviousParts[nIndex] = nil
+            return completeProgramArgument( sPath , nIndex - 1, sPart, tPreviousParts )
+
+        end
+    end
+	return nil
+end
+
+function shell.completeProgram( sProgram )
+    return completeProgram( sProgram )
+end
+
+function shell.setCompletionFunction( sProgram, fnComplete )
+    tCompletionInfo[ sProgram ] = {
+        fnComplete = fnComplete
+    }
+end
+
+function shell.getCompletionInfo()
+    return tCompletionInfo
 end
 
 function shell.getRunningProgram()
@@ -155,68 +279,65 @@ function shell.clearAlias( _sCommand )
 end
 
 function shell.aliases()
-	-- Add aliases
+	-- Copy aliases
 	local tCopy = {}
 	for sAlias, sCommand in pairs( tAliases ) do
 		tCopy[sAlias] = sCommand
 	end
 	return tCopy
 end
-	
-term.setBackgroundColor( bgColour )
-term.setTextColour( promptColour )
-print( os.version() )
-term.setTextColour( textColour )
 
--- If this is the toplevel shell, run the startup programs
-if parentShell == nil then
-	-- Run the startup from the ROM first
-	local sRomStartup = shell.resolveProgram( "/rom/startup" )
-	if sRomStartup then
-		shell.run( sRomStartup )
-	end
-	
-	-- Then run the user created startup, from the disks or the root
-	local sUserStartup = shell.resolveProgram( "/startup" )
-	for n,sSide in pairs( peripheral.getNames() ) do
-	--for n,sSide in pairs( redstone.getSides() ) do
-		if disk.isPresent( sSide ) and disk.hasData( sSide ) then
-			local sDiskStartup = shell.resolveProgram( fs.combine(disk.getMountPath( sSide ), "startup") )
-			if sDiskStartup then
-				sUserStartup = sDiskStartup
-				break
-			end
-		end
-	end
-	
-	if sUserStartup then
-		shell.run( sUserStartup )
-	end
+if multishell then
+    function shell.openTab( ... )
+        local tWords = tokenise( ... )
+        local sCommand = tWords[1]
+        if sCommand then
+        	local sPath = shell.resolveProgram( sCommand )
+        	if sPath == "rom/programs/shell" then
+                return multishell.launch( tEnv, sPath, table.unpack( tWords, 2 ) )
+            elseif sPath ~= nil then
+                return multishell.launch( tEnv, "rom/programs/shell", sCommand, table.unpack( tWords, 2 ) )
+            else
+                printError( "No such program" )
+            end
+        end
+    end
+
+    function shell.switchTab( nID )
+        multishell.setFocus( nID )
+    end
 end
 
--- Run any programs passed in as arguments
 local tArgs = { ... }
 if #tArgs > 0 then
-	shell.run( ... )
-end
+    -- "shell x y z"
+    -- Run the program specified on the commandline
+    shell.run( ... )
 
--- Read commands and execute them
-local tCommandHistory = {}
-while not bExit do
-	term.setBackgroundColor( bgColour )
-	term.setTextColour( promptColour )
-	write( shell.dir() .. "> " )
-	term.setTextColour( textColour )
+else
+    -- "shell"
+    -- Print the header
+    term.setBackgroundColor( bgColour )
+    term.setTextColour( promptColour )
+    print( os.version() )
+    term.setTextColour( textColour )
 
-	local sLine = read( nil, tCommandHistory )
-	table.insert( tCommandHistory, sLine )
-	runLine( sLine )
-end
+    -- Run the startup program
+    if parentShell == nil then
+        shell.run( "/rom/startup" )
+    end
 
--- If this is the toplevel shell, run the shutdown program
-if parentShell == nil then
-	if shell.resolveProgram( "shutdown" ) then
-		shell.run( "shutdown" )
-	end
-	os.shutdown() -- just in case
+    -- Read commands and execute them
+    local tCommandHistory = {}
+    while not bExit do
+        term.redirect( parentTerm )
+        term.setBackgroundColor( bgColour )
+        term.setTextColour( promptColour )
+        write( shell.dir() .. "> " )
+        term.setTextColour( textColour )
+
+        local sLine = read( nil, tCommandHistory, shell.complete )
+        table.insert( tCommandHistory, sLine )
+        shell.run( sLine )
+    end
 end

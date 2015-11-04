@@ -1,7 +1,11 @@
 @echo off
-set /P version=Enter version (Format: x.y.z): 
-cd src\
-7z a -tzip "..\build\temp.zip" ".\*" -mx5
-cd ..\
-rename build\temp.zip cclite-beta-%version%.love
+if not exist cclite-latest-beta.love goto makeArchive
+set /P replace=Overwrite cclite-latest-beta.love [Y/N]: 
+if /I NOT %replace%==Y goto end
+del cclite-latest-beta.love
+:makeArchive
+cd src
+..\7za.exe a -r -tzip -mx5 ..\cclite-latest-beta.love ".\*"
+cd ..
+:end
 pause

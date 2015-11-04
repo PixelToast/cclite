@@ -1,17 +1,10 @@
-debugmode = false
 function love.conf(t)
-    t.title = "ComputerCraft Emulator"
-    t.author = "Sorroko"
-    t.version = "0.8.0"
-
-    t.modules.physics = false
-
-    if debugmode then
-   	    t.console = true
-        t.release = false
-	else
-        t.screen = false -- Disable screen, wait for resize in main.lua
-        t.console = false
-        t.release = true
-    end
+	t.identity = "ccemu"
+	t.console = false -- Enable this to see why you get emulator messages.
+	t.window = false
+	t.modules.audio = false
+	t.modules.joystick = false
+	t.modules.physics = false
+	t.modules.sound = false
+	t.modules.math = false
 end

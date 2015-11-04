@@ -1,138 +1,66 @@
-local threadId			= nil
-local socketTImeout		= 10
+local ltn12  = require("ltn12")
+local httpRequest = require("socket.http")
+local httpResponseBody = {}
+local httpResponseText = ""
+local httpParams = {}
+local httpsSupport, httpsRequest, cChannel
 
-local httpRequest 		= require("socket.http")
-local httpMime			= require("mime")
-local ltn12 			= require("ltn12")
+function waitForInstructions(channel,supportHTTPS)
+	cChannel = channel
+	assert(type(supportHTTPS) == "boolean", "HTTPS support flag invalid.")
+	httpsSupport = supportHTTPS
+	
+	while true do
+		httpParamsMsg = cChannel:demand()
+		assert(type(httpParamsMsg) == "string", "HTTP parameters invalid.")
+		httpParams = TSerial.unpack(httpParamsMsg)
 
-local httpResponseBody 	= {}
-local httpResponseText 	= ""
-local httpParams 		= {}
-
-local requestDebug		= false
-
-function waitForInstructions()
-	--set message vars
-	local threadIdMsg		= love.thread.getThread():get("threadId")
-	local socketTimeoutMsg	= love.thread.getThread():get("socketTimeout")
-	local httpParamMsg 		= love.thread.getThread():get("httpParams")
-
-	-- receive thread id
-	if threadIdMsg ~= nil then
-		threadId = threadIdMsg
-		-- DEBUG CODE
-		if requestDebug == true then
-			print(" ")
-			print("---REQUEST THREAD ID--")
-			print("threadId: "..threadId)
-			print(" ")
-		end
-	end
-
-	-- receive socket timeout
-	if socketTimeoutMsg ~= nil then
-		socketTimeout = tonumber(socketTimeoutMsg)
-		-- DEBUG CODE
-		if requestDebug == true then
-			print("---REQUEST TIMEOUT----")
-			print("timeout: "..socketTimeout)
-			print(" ")
-		end
-	end
-
-	-- receive request params
-	if httpParamMsg ~= nil and threadIdMsg ~= nil then
-		httpParams = TSerial.unpack(httpParamMsg)
-
-		-- DEBUG CODE
-		if requestDebug == true then
-			print("---REQUEST PARAMS-----")
-			for k,v in pairs(httpParams) do
-				if k ~= "headers" then
-					print(k .. ": " .. tostring(httpParams[k]))
-				end
-			end
-			print(" ")
-			print("---REQUEST HEADERS----")
-			for k,v in pairs(httpParams) do
-				--print(k .. ": " .. tostring(httpParams[k]))
-				if k == "headers" then
-					for k2,v2 in pairs(httpParams[k]) do
-						print("header: ["..tostring(k2).."] = "..tostring(v2))
-					end
-				end
-			end
-			print("     ")
-		end
-
+		httpParams.redirects = 0
+		httpResponseText = ""
 		sendRequest()
-	else
-		waitForInstructions()
 	end
 end
 
 -- ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-function sendRequest(_url)
-	httpRequest.TIMEOUT = socketTimeout
+function sendRequest()
+	httpResponseBody = {}
+	httpRequest.TIMEOUT = 21
 
-	-- send request:
+	-- Send request:
+	if httpParams.url:sub(1,6) == "https:" and httpsSupport == true and httpsRequest == nil then
+		httpsRequest = require("ssl.https")
+	end
 	local result  =
 	{
-		httpRequest.request
+		(httpParams.url:sub(1,6) == "https:" and httpsSupport == true and httpsRequest or httpRequest).request
 		{
-			method 		= httpParams.method,
-			url			= _url or httpParams.url,
-			headers		= httpParams.headers,
-			source		= ltn12.source.string(httpParams.body),
-			sink		= ltn12.sink.table(httpResponseBody),
-			redirect	= true
+			method = httpParams.method,
+			url = httpParams.url,
+			headers = httpParams.headers,
+			source = ltn12.source.string(httpParams.body),
+			sink = ltn12.sink.table(httpResponseBody),
+			redirect = false
 		}
 	}
 
-	if result[2] == 302 then
-		if result[3]["location"] then
-			httpResponseBody = {}
-			return sendRequest(result[3]["location"]) -- Hehe, not the best way, maybe limit recursion?
-		end
+	if (result[2] == 302 or result[2] == 301) and httpParams.redirects < 19 and httpParams.url ~= result[3].location then -- Infinite loop detection
+		httpParams.url = result[3]["location"]
+		httpParams.redirects = httpParams.redirects + 1
+		sendRequest()
+		return
 	end
 
-	-- compile responseText
+	-- Compile responseText
 	for k,v in ipairs(httpResponseBody) do
 		httpResponseText = httpResponseText .. tostring(v)
 	end
 
-	-- insert responseText in to result table
+	-- Insert responseText in to result table
 	table.insert(result, httpResponseText)
 
-	-- DEBUG CODE
-	if requestDebug == true then
-		print("---RESPONSE HEADERS---")
-		for k, v in pairs(result) do
-			if type(result[k]) == "table" then
-				for k2, v2 in pairs(result[k]) do
-					local tbl = result[k]
-					print("header: " .. "["..tostring(k2).."] = ".. tbl[k2])
-				end
-			end
-		end
-		for k, v in pairs(result) do
-			print(v)
-		end
-		print(" ")
-		print("---RESPONSE PARAMS---")
-		print("readyState: ".. tostring(result[1]) )
-		print("statusCode: ".. tostring(result[2]) )
-		print("statusText: ".. tostring(result[4]) )
-		print("responseText: " .. httpResponseText )
-		print("---------------------")
-
-	end
-
-	-- send results back to main thread
-	love.thread.getThread("main"):set(threadId.."_response", TSerial.pack(result))
-
-	--love.thread.getThread().kill()
+	-- Send results back to handler
+	cChannel:supply(TSerial.pack(result))
 end
 
 -- ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -155,7 +83,7 @@ function TSerial.pack(t)
 		end
 		if tv == "boolean" then v = v and "true" or "false"
 		elseif tv == "string" then v = string.format("%q", v)
-		elseif tv == "number" then	-- no change needed
+		elseif tv == "number" then  -- no change needed
 		elseif tv == "table" then v = TSerial.pack(v)
 		else error("Attempted to Tserialize a table with an invalid value: "..tostring(v))
 		end
@@ -165,13 +93,10 @@ function TSerial.pack(t)
 end
 
 function TSerial.unpack(s)
-	assert(type(s) == "string", "Can only TSerial.unpack strings.")
-	assert(loadstring("TSerial.table="..s))()
-	local t = TSerial.table
-	TSerial.table = nil
-	return t
+	assert(type(s) == "string", "TSerial.unpack: string expected, got " .. type(s))
+	return assert(loadstring("return "..s))()
 end
 
 -- ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-waitForInstructions()
+waitForInstructions(...)

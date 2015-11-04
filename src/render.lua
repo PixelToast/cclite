@@ -1,24 +1,23 @@
-
-COLOUR_RGB = {
-	WHITE = {255, 255, 255},
-	ORANGE = {230, 125, 50},
-	MAGENTA = {230, 50, 145},
-	LIGHT_BLUE = {16, 106, 232},
-	YELLOW = {240, 230, 50},
-	LIME = {50, 240, 50},
-	PINK = {230, 50, 225},
-	GRAY = {90, 90, 90},
-	LIGHT_GRAY = {150, 150, 150},
-	CYAN = {50, 230, 230},
-	PURPLE = {130, 50, 230},
-	BLUE = {50, 60, 230},
-	BROWN = {150, 85, 75},
-	GREEN = {60, 220, 40},
-	RED = {230, 20, 20},
-	BLACK = {0, 0, 0},
+local COLOUR_RGB = {
+	WHITE = {240, 240, 240},
+	ORANGE = {242, 178, 51},
+	MAGENTA = {229, 127, 216},
+	LIGHT_BLUE = {153, 178, 242},
+	YELLOW = {222, 222, 108},
+	LIME = {127, 204, 25},
+	PINK = {242, 178, 204},
+	GRAY = {76, 76, 76},
+	LIGHT_GRAY = {153, 153, 153},
+	CYAN = {76, 153, 178},
+	PURPLE = {178, 102, 229},
+	BLUE = {51, 102, 204},
+	BROWN = {127, 102, 76},
+	GREEN = {87, 166, 78},
+	RED = {204, 76, 76},
+	BLACK = {25, 25, 25},
 }
 
-COLOUR_CODE = {
+local COLOUR_CODE = {
 	[1] = COLOUR_RGB.WHITE,
 	[2] = COLOUR_RGB.ORANGE,
 	[4] =  COLOUR_RGB.MAGENTA,
@@ -38,87 +37,176 @@ COLOUR_CODE = {
 }
 
 Screen = {
-	width = 51,
-	height = 19,
+	sWidth = (_conf.terminal_width * 6 * _conf.terminal_guiScale) + (_conf.terminal_guiScale * 2),
+	sHeight = (_conf.terminal_height * 9 * _conf.terminal_guiScale) + (_conf.terminal_guiScale * 2),
 	textB = {},
 	backgroundColourB = {},
 	textColourB = {},
 	font = nil,
-	pixelWidth = 6 * 2,
-	pixelHeight = 9 * 2,
-	showCursor = false,
-	textOffset = 3, -- Small correction for font, align the bottom of font with bottom of pixel.
+	pixelWidth = _conf.terminal_guiScale * 6,
+	pixelHeight = _conf.terminal_guiScale * 9,
 	showCursor = false,
 	lastCursor = nil,
+	dirty = true,
+	tOffset = {},
+	messages = {},
+	setup = false,
 }
-function Screen:init()
-	for y = 1, self.height do
-		self.textB[y] = {}
-		self.backgroundColourB[y] = {}
-		self.textColourB[y] = {}
-		for x = 1, self.width do
-			self.textB[y][x] = " "
-			self.backgroundColourB[y][x] = 32768
-			self.textColourB[y][x] = 1
-		end
+for y = 1, _conf.terminal_height do
+	Screen.textB[y] = {}
+	Screen.backgroundColourB[y] = {}
+	Screen.textColourB[y] = {}
+	for x = 1, _conf.terminal_width do
+		Screen.textB[y][x] = " "
+		Screen.backgroundColourB[y][x] = 32768
+		Screen.textColourB[y][x] = 1
 	end
-
-	self.font = love.graphics.getFont()
 end
 
+local glyphs = ""
+for i = 32,126 do
+	glyphs = glyphs .. string.char(i)
+end
+Screen.font = love.graphics.newImageFont("res/minecraft.png",glyphs)
+Screen.font:setFilter("nearest","nearest")
+love.graphics.setFont(Screen.font)
+love.graphics.setLineWidth(_conf.terminal_guiScale)
+
+for i = 32,126 do Screen.tOffset[string.char(i)] = math.ceil(3 - Screen.font:getWidth(string.char(i)) / 2) * _conf.terminal_guiScale end
+
+local msgTime = love.timer.getTime() + 5
+for i = 1,10 do
+	Screen.messages[i] = {"",msgTime,false}
+end
+
+local COLOUR_FULL_WHITE = {255,255,255}
+local COLOUR_FULL_BLACK = {0,0,0}
+local COLOUR_HALF_BLACK = {0,0,0,72}
+local COLOUR_HALF_WHITE = {255,255,255,127}
+
 -- Local functions are faster than global
--- Source: https://love2d.org/forums/viewtopic.php?f=3&t=3500
--- Unconfirmed, saw a drop from 12% to 10% cpu usage, too small a diff to confirm.
 local lsetCol = love.graphics.setColor
 local ldrawRect = love.graphics.rectangle
-local ldrawLine = love.graphics.line
 local lprint = love.graphics.print
+local tOffset = Screen.tOffset
+local decWidth = _conf.terminal_width - 1
+local decHeight = _conf.terminal_height - 1
 
-local lastColor
+local lastColor = COLOUR_FULL_WHITE
 local function setColor(c)
 	if lastColor ~= c then
 		lastColor = c
 		lsetCol(c)
 	end
-	return self
 end
 
+if _conf.mobileMode then
+	controlPad = {}
+end
+
+local messages = {}
+
+function Screen:message(message)
+	for i = 1,9 do
+		self.messages[i] = self.messages[i+1]
+	end
+	self.messages[10] = {message,love.timer.getTime(),true}
+	self.dirty = true
+end
+
+local function drawMessage(message,x,y)
+	setColor(COLOUR_HALF_BLACK)
+	ldrawRect("fill", x, y - _conf.terminal_guiScale, Screen.font:getWidth(message) * _conf.terminal_guiScale, Screen.pixelHeight)
+	setColor(COLOUR_FULL_WHITE)
+	lprint(message, x, y, 0, _conf.terminal_guiScale, _conf.terminal_guiScale)
+end
+
+local hidden = {
+	["\0"]=true,
+	["\9"]=true,
+	["\r"]=true,
+	["\n"]=true,
+	[" "]=true,
+}
 function Screen:draw()
-	if not Emulator.running then
-		local text = "Press any key..."
-		lprint(text, ((self.width * self.pixelWidth) / 2) - (font:getWidth(text) / 2), (self.height * self.pixelHeight) / 2)
-		return
-	end
+	-- Render terminal
+	if not Computer.running then
+		setColor(COLOUR_FULL_BLACK)
+		ldrawRect("fill", 0, 0, self.sWidth, self.sHeight)
+	else
+		-- Render background color
+		setColor(COLOUR_CODE[self.backgroundColourB[1][1]])
+		for y = 0, decHeight do
+			local length, last, lastx = 0
+			local ypos = y * self.pixelHeight + (y == 0 and 0 or _conf.terminal_guiScale)
+			local ylength = self.pixelHeight + ((y == 0 or y == decHeight) and _conf.terminal_guiScale or 0)
+			for x = 0, decWidth do
+				if self.backgroundColourB[y + 1][x + 1] ~= last then
+					if last then
+						ldrawRect("fill", lastx * self.pixelWidth + (lastx == 0 and 0 or _conf.terminal_guiScale), ypos, self.pixelWidth * length + (lastx == 0 and _conf.terminal_guiScale or 0), ylength)
+					end
+					last = self.backgroundColourB[y + 1][x + 1]
+					lastx = x
+					length = 1
+					setColor(COLOUR_CODE[last]) -- TODO COLOUR_CODE lookup might be too slow?
+				else
+					length = length + 1
+				end
+			end
+			ldrawRect("fill", lastx * self.pixelWidth + (lastx == 0 and 0 or _conf.terminal_guiScale), ypos, self.pixelWidth * length + _conf.terminal_guiScale * (lastx == 0 and 2 or 1), ylength)
+		end
 
-	-- TODO Better damn rendering!
-	-- term api draws directly to buffer
-	-- i.e. each pixel is updated independantly on a canvas
-	-- copy the canvas to main canvas only when dirty/changed (blinking cursor)
+		-- Render text
+		for y = 0, decHeight do
+			local self_textB = self.textB[y + 1]
+			local self_textColourB = self.textColourB[y + 1]
+			for x = 0, decWidth do
+				local text = self_textB[x + 1]
+				if not hidden[text] then
+					local sByte = string.byte(text)
+					if sByte < 32 or sByte > 126 then
+						text = "?"
+					end
+					setColor(COLOUR_CODE[self_textColourB[x + 1]])
+					lprint(text, x * self.pixelWidth + tOffset[text] + _conf.terminal_guiScale, y * self.pixelHeight + _conf.terminal_guiScale, 0, _conf.terminal_guiScale, _conf.terminal_guiScale)
+				end
+			end
+		end
 
-	for y = 0, self.height - 1 do
-		for x = 0, self.width - 1 do
-
-			setColor( COLOUR_CODE[ self.backgroundColourB[y + 1][x + 1] ] ) -- TODO COLOUR_CODE lookup might be too slow?
-			ldrawRect("fill", x * self.pixelWidth, y * self.pixelHeight, self.pixelWidth, self.pixelHeight )
-
+		-- Render cursor
+		if Computer.state.blink and self.showCursor then
+			setColor(COLOUR_CODE[Computer.state.fg])
+			lprint("_", (Computer.state.cursorX - 1) * self.pixelWidth + tOffset["_"] + _conf.terminal_guiScale, (Computer.state.cursorY - 1) * self.pixelHeight + _conf.terminal_guiScale, 0, _conf.terminal_guiScale, _conf.terminal_guiScale)
 		end
 	end
 
-	-- Two seperate for loops to not setColor all the time and allow batch gl calls.
-	-- Is this actually a performance improvement?
-	for y = 0, self.height - 1 do
-		for x = 0, self.width - 1 do
-			local text = self.textB[y + 1][x + 1]
-			local offset = self.pixelWidth / 2 - self.font:getWidth(text) / 2 -- Could also create a lookup table of widths on load
-			setColor( COLOUR_CODE[ self.textColourB[y + 1][x + 1] ] )
-			lprint( text, (x * self.pixelWidth) + offset, (y * self.pixelHeight) + self.textOffset)
-
+	-- Render emulator elements
+	for i = 1,10 do
+		if self.messages[i][3] then
+			drawMessage(self.messages[i][1],_conf.terminal_guiScale, self.sHeight - ((self.pixelHeight + _conf.terminal_guiScale) * (11 - i)) + _conf.terminal_guiScale)
 		end
 	end
 
-	if api.term.blink and self.showCursor then
-		local offset = self.pixelWidth / 2 - self.font:getWidth("_") / 2
-		setColor(COLOUR_CODE[ api.term.fg ])
-		lprint("_", (api.term.cursorX - 1) * self.pixelWidth + offset, (api.term.cursorY - 1) * self.pixelHeight + self.textOffset)
+	if _conf.cclite_showFPS then
+		drawMessage("FPS: " .. Computer.FPS, self.sWidth - (49 * _conf.terminal_guiScale), _conf.terminal_guiScale * 2)
+	end
+	if _conf.mobileMode then
+		local radius = 20 * _conf.terminal_guiScale
+		local scale6 = 6 * _conf.terminal_guiScale
+		local x, y = radius + scale6, love.window.getHeight() - radius - scale6
+		controlPad["x"] = x
+		controlPad["y"] = y
+		controlPad["r"] = radius
+		setColor(COLOUR_HALF_WHITE)
+		love.graphics.circle("fill", x, y, radius, 100)
+		setColor(COLOUR_FULL_BLACK)
+		love.graphics.circle("line", x, y, radius, 100)
+		love.graphics.circle("line", x, y, radius/2.5, 100)
+		local radiusOut = radius*7/10
+		local radiusIn = radius*3/10
+		love.graphics.line(x - radiusOut, y + radiusOut, x - radiusIn, y + radiusIn)
+		love.graphics.line(x - radiusOut, y - radiusOut, x - radiusIn, y - radiusIn)
+		love.graphics.line(x + radiusOut, y - radiusOut, x + radiusIn, y - radiusIn)
+		love.graphics.line(x + radiusOut, y + radiusOut, x + radiusIn, y + radiusIn)
 	end
 end

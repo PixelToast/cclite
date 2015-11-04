@@ -1,6 +1,6 @@
 
 function printUsage()
-	print( "Usage: monitor <side> <program> <arguments>" )
+	print( "Usage: monitor <name> <program> <arguments>" )
 	return
 end
 
@@ -10,9 +10,9 @@ if #tArgs < 2 then
 	return
 end
 
-local sSide = tArgs[1]
-if peripheral.getType( sSide ) ~= "monitor" then
-	print( "No monitor on "..sSide.." side" )
+local sName = tArgs[1]
+if peripheral.getType( sName ) ~= "monitor" then
+	print( "No monitor named ".. sName )
 	return
 end
 
@@ -23,13 +23,13 @@ if sPath == nil then
 	return
 end
 
-print( "Running "..sProgram.." on "..sSide.." monitor" )
+print( "Running "..sProgram.." on monitor "..sName )
 
-local monitor = peripheral.wrap( sSide )
-term.redirect( monitor )
+local monitor = peripheral.wrap( sName )
+local previousTerm = term.redirect( monitor )
 
 local co = coroutine.create( function()
-    shell.run( sProgram, unpack( tArgs, 3 ) )
+    shell.run( sProgram, table.unpack( tArgs, 3 ) )
 end )
 
 local function resume( ... )
@@ -45,17 +45,22 @@ local ok, param = pcall( function()
 	while coroutine.status( co ) ~= "dead" do
 		local tEvent = { os.pullEventRaw() }
 		if sFilter == nil or tEvent[1] == sFilter or tEvent[1] == "terminate" then
-			sFilter = resume( unpack( tEvent ) )
+			sFilter = resume( table.unpack( tEvent ) )
 		end
 		if coroutine.status( co ) ~= "dead" and (sFilter == nil or sFilter == "mouse_click") then
-			if tEvent[1] == "monitor_touch" and tEvent[2] == sSide then
-				sFilter = resume( "mouse_click", 1, unpack( tEvent, 3 ) )
+			if tEvent[1] == "monitor_touch" and tEvent[2] == sName then
+				sFilter = resume( "mouse_click", 1, table.unpack( tEvent, 3 ) )
+			end
+		end
+		if coroutine.status( co ) ~= "dead" and (sFilter == nil or sFilter == "term_resize") then
+			if tEvent[1] == "monitor_resize" and tEvent[2] == sName then
+				sFilter = resume( "term_resize" )
 			end
 		end
 	end
 end )
 
-term.restore()
+term.redirect( previousTerm )
 if not ok then
 	printError( param )
 end
